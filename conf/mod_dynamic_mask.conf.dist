@@ -1,0 +1,19 @@
+#
+# Copyright (C) 2016+ AzerothCore <www.azerothcore.org>, released under GNU AGPL v3 license: https://github.com/azerothcore/azerothcore-wotlk/blob/master/LICENSE-AGPL3
+#
+
+[worldserver]
+
+########################################
+# Dynamic Bitmask Configuration
+########################################
+#
+#    DynamicMask.EnableItemOpcodeHook
+#        Description: Enable custom serialization of AllowableRace in SMSG_ITEM_QUERY_SINGLE_RESPONSE
+#                     using the dynamic BitPack format for patched WarcraftXL clients.
+#                     If set to 0, the server always sends the vanilla 32-bit AllowableRace integer.
+#        Default:     1 (Enabled)
+#                     0 (Disabled - legacy client compatibility)
+
+DynamicMask.EnableItemOpcodeHook = 1
+
