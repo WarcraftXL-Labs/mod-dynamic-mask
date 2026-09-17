@@ -121,3 +121,34 @@ bool DynamicMaskMgr::ValidateConditionRace(uint32 condId) const
 {
     return _conditionMasks.find(condId) != _conditionMasks.end();
 }
+
+DynamicBitMask const* DynamicMaskMgr::GetItemMask(uint32 entry) const
+{
+    auto itr = _itemMasks.find(entry);
+    if (itr != _itemMasks.end())
+    {
+        return &itr->second;
+    }
+    return nullptr;
+}
+
+DynamicBitMask const* DynamicMaskMgr::GetQuestMask(uint32 entry) const
+{
+    auto itr = _questMasks.find(entry);
+    if (itr != _questMasks.end())
+    {
+        return &itr->second;
+    }
+    return nullptr;
+}
+
+DynamicBitMask const* DynamicMaskMgr::GetConditionMask(uint32 condId) const
+{
+    auto itr = _conditionMasks.find(condId);
+    if (itr != _conditionMasks.end())
+    {
+        return &itr->second;
+    }
+    return nullptr;
+}
+

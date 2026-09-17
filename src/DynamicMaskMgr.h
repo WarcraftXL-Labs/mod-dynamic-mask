@@ -70,6 +70,20 @@ public:
      */
     [[nodiscard]] DynamicBitMask const* GetItemMask(uint32 entry) const;
 
+    /**
+     * @brief Gets the dynamic racemask overlay for a quest entry if one exists.
+     * @param entry Quest entry (PK)
+     * @return Pointer to DynamicBitMask if found, nullptr otherwise (fallback to legacy)
+     */
+    [[nodiscard]] DynamicBitMask const* GetQuestMask(uint32 entry) const;
+
+    /**
+     * @brief Gets the dynamic racemask overlay for a condition if one exists.
+     * @param condId Condition overlay ID (PK)
+     * @return Pointer to DynamicBitMask if found, nullptr otherwise (fallback to legacy)
+     */
+    [[nodiscard]] DynamicBitMask const* GetConditionMask(uint32 condId) const;
+
     [[nodiscard]] std::size_t GetItemMaskCount() const { return _itemMasks.size(); }
     [[nodiscard]] std::size_t GetQuestMaskCount() const { return _questMasks.size(); }
     [[nodiscard]] std::size_t GetConditionMaskCount() const { return _conditionMasks.size(); }
