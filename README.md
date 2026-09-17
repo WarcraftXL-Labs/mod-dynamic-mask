@@ -2,52 +2,95 @@
 
 ## Overview
 
-`mod-dynamic-mask` is an architectural extension for AzerothCore (WoW 3.3.5a / 12340) designed to break the legacy 32-bit race limit (`RaceID > 32`).
+`mod-dynamic-mask` is an architectural extension for AzerothCore (WoW 3.3.5a / 12340) designed to break the legacy 32-bit race and class limit (`RaceID > 32`, `ClassID > 32`).
 
-In standard World of Warcraft 3.3.5a, race masks are stored and evaluated as 32-bit unsigned integers (`uint32`), where `bit = 1 << (RaceID - 1)`. Consequently, vanilla and core systems are capped at 32 races (`RaceID` 1 to 32). This module, paired with core ScriptMgr hooks and the dedicated `acore_hotfixes` database, allows servers to define arbitrary-length race bitmasks supporting hundreds of custom races without modifying legacy base tables (`item_template`, `quest_template`, etc.).
+In standard World of Warcraft 3.3.5a, race and class masks are stored and evaluated as 32-bit unsigned integers (`uint32`), where `bit = 1 << (ID - 1)`. Consequently, vanilla and core systems are strictly capped at 32 races and classes.
+
+This module provides a unified hybrid architecture combining:
+1. **DBC Layer (`DynamicMask.dbc`)**: Replaces fixed 32-bit integer fields across client/server DBCs with dynamic mask IDs.
+2. **Hotfixes Database (`acore_hotfixes`)**: Hotfix overlay tables for items, quests, and conditions, hot-reloadable at runtime without restarts.
+3. **Core ScriptMgr Hooks**: Non-invasive hooks in item equip, quest prerequisites, conditions, and network packet streaming.
+4. **Automated Tooling (`lua-dbc`)**: High-performance Lua scripts in `data/lua/` to parse, generate, and convert DBC files.
 
 ---
 
 ## Key Features
 
-1. **Arbitrary-Length Race Bitmasks**: Supports custom race IDs well beyond 32 (Race 33, 35, 70, etc.).
-2. **Dedicated Hotfixes Database (`acore_hotfixes`)**: Hotfix and dynamic mask data are isolated in a dedicated database worker pool, hot-reloadable at runtime without restarting the worldserver.
-3. **Non-Invasive Overlay Pattern**: Legacy content tables (`world.item_template`, `world.quest_template`, `world.conditions`) remain 100% vanilla and intact. Custom masks overlay existing entries by primary key.
-4. **Two-Tier Fallback Safety**:
-   - **Emulator/Core Fallback**: If the module is not loaded or disabled, AzerothCore executes vanilla 32-bit bitmask logic without any behavioral changes.
-   - **Overlay Table Fallback**: If an item, quest, or condition does not have an entry in `dynamic_racemask_*`, the server automatically falls back to legacy 32-bit mask values (`AllowableRace`, `AllowableRaces`, `ConditionValue1`).
-5. **Dynamic BitPack Network Streaming**: Efficient serialization for `SMSG_ITEM_QUERY_SINGLE_RESPONSE` to send variable-length race masks to modded WarcraftXL clients.
-6. **Zero Allocation for Common Cases (SBO)**: Uses `boost::container::small_vector<uint32, 2>` ensuring stack allocation for up to 64 races (2 words).
+- **Arbitrary-Length Bitmasks**: Supports custom race IDs well beyond 32 (e.g. Race 33, 35, 70) and custom class IDs.
+- **Dedicated Hotfixes Database (`acore_hotfixes`)**: Isolated database worker pool for dynamic mask overlays.
+- **Client & Server DBC Integration (`DynamicMask.dbc`)**: Pre-converted DBCs included in `data/dbc/` for seamless client-server parity.
+- **Two-Tier Fallback Safety**:
+  - **DBC Fallback**: If an integer in a DBC does not match an entry in `DynamicMask.dbc`, `MatchesRaceMask` / `MatchesClassMask` automatically evaluates it as a legacy 32-bit bitmask.
+  - **Core Fallback**: If the module is not loaded or disabled, AzerothCore executes vanilla 32-bit bitmask logic without any behavioral changes.
+  - **Overlay Table Fallback**: If an item, quest, or condition does not have a row in `dynamic_racemask_*`, the server falls back to legacy 32-bit fields (`AllowableRace`, `AllowableRaces`, `ConditionValue1`).
+- **Dynamic BitPack Network Streaming**: Efficient length-prefixed serialization in `SMSG_ITEM_QUERY_SINGLE_RESPONSE` (`0x058`).
+- **Zero Allocation for Common Cases (SBO)**: Uses `boost::container::small_vector<uint32, 2>` ensuring stack allocation for up to 64 races (2 words).
 
 ---
 
-## Architecture & Database Design
+## DBC Layer: `DynamicMask.dbc`
 
-### Hotfixes Database (`acore_hotfixes`)
+### DBC Record Structure
 
-The module stores its overlay tables in the `acore_hotfixes` database:
+The module introduces `DynamicMask.dbc` (`WDBC` format):
 
-```sql
-CREATE DATABASE IF NOT EXISTS `acore_hotfixes` DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+| Field Index | Field Name | Type | Description |
+|:-----------:|:----------:|:----:|:------------|
+| 0 | `ID` | `uint32` | Unique identifier (Primary Key) |
+| 1 | `Type` | `uint32` | `0` = RaceMask, `1` = ClassMask, `2` = Other |
+| 2 | `Mask` | `string` | Arbitrary-length bitmask string (e.g. `"0x0000044D"`) |
+| 3 | `Comment` | `string` | Human-readable description (e.g. `"Alliance"`, `"Horde"`) |
+
+- **RaceMask IDs (`Type = 0`)**: `1` to `999`
+- **ClassMask IDs (`Type = 1`)**: `1001` to `1999`
+
+### Modified Stock DBCs Included in `data/dbc/`
+
+The module bundles pre-converted stock 3.3.5a DBC files where legacy 32-bit mask fields have been mapped to `DynamicMask.dbc` IDs:
+
+1. **`SkillRaceClassInfo.dbc`**: Replaced `RaceMask` and `ClassMask`.
+2. **`SkillLineAbility.dbc`**: Replaced `RaceMask`, `ExcludeRace`, `ClassMask`, `ExcludeClass`.
+3. **`TalentTab.dbc`**: Replaced `RaceMask` and `ClassMask`.
+4. **`DanceMoves.dbc`**: Replaced `Racemask`.
+5. **`Faction.dbc`**: Replaced `ReputationRaceMask[4]` and `ReputationClassMask[4]`.
+
+### C++ Core Integration & Fallback
+
+In AzerothCore (`DBCStores.h` / `DBCStores.cpp`), masks are validated using global helper functions:
+
+```cpp
+bool MatchesRaceMask(uint32 maskOrId, uint8 race);
+bool MatchesClassMask(uint32 maskOrId, uint8 class_);
 ```
 
-Connection configuration is managed in `worldserver.conf`:
+**Evaluation Logic**:
+1. If `maskOrId == 0`, unrestricted $\rightarrow$ returns `true`.
+2. If `maskOrId` is found in `sDynamicMaskCache` (populated from `DynamicMask.dbc`), evaluates `mask->HasRace(race)`.
+3. **Fallback**: If `maskOrId` is not found in `DynamicMask.dbc`, evaluates as legacy 32-bit mask: `(maskOrId & (1U << (race - 1))) != 0`.
+
+---
+
+## Database Architecture: `acore_hotfixes`
+
+### Connection Configuration
+
+Managed in `worldserver.conf`:
 ```ini
 HotfixesDatabaseInfo = "127.0.0.1;3306;acore;acore;acore_hotfixes"
-HotfixesDatabase.WorkerThreads     = 1
-HotfixesDatabase.SynchThreads      = 1
+HotfixesDatabase.WorkerThreads = 1
+HotfixesDatabase.SynchThreads  = 1
 ```
 
 ### Overlay Tables Schema
 
-All dynamic race masks are stored as `VARBINARY` (byte arrays):
+All dynamic race masks are stored as `VARBINARY` (byte arrays, Big-Endian in MySQL):
 
 #### 1. Items (`dynamic_racemask_item`)
 Overlays race restrictions checked during equipping/using items (`Player::CanUseItem`):
 ```sql
 CREATE TABLE IF NOT EXISTS `dynamic_racemask_item` (
     `entry` INT UNSIGNED NOT NULL COMMENT 'Item template entry (item_template.entry)',
-    `racemask` VARBINARY(64) NOT NULL COMMENT 'Binary racemask bytes (Big-Endian in SQL, bit = raceId - 1)',
+    `racemask` VARBINARY(32) NOT NULL COMMENT 'Binary racemask bytes (Big-Endian in SQL, bit = raceId - 1)',
     PRIMARY KEY (`entry`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 ```
@@ -57,18 +100,17 @@ Overlays race restrictions checked when viewing or accepting quests (`Player::Sa
 ```sql
 CREATE TABLE IF NOT EXISTS `dynamic_racemask_quest` (
     `entry` INT UNSIGNED NOT NULL COMMENT 'Quest ID (quest_template.ID)',
-    `racemask` VARBINARY(64) NOT NULL COMMENT 'Binary racemask bytes (Big-Endian in SQL, bit = raceId - 1)',
+    `racemask` VARBINARY(32) NOT NULL COMMENT 'Binary racemask bytes (Big-Endian in SQL, bit = raceId - 1)',
     PRIMARY KEY (`entry`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 ```
 
 #### 3. Conditions (`dynamic_racemask_condition`)
-Overlays `CONDITION_RACE` checks in `ConditionMgr`. Triggered when `ConditionValue2 == 1`, where `ConditionValue1` references `dynamic_racemask_condition.id`:
+Overlays `CONDITION_RACE` (`16`) checks in `ConditionMgr`. Triggered when `ConditionValue2 == 1`, where `ConditionValue1` references `dynamic_racemask_condition.id`:
 ```sql
 CREATE TABLE IF NOT EXISTS `dynamic_racemask_condition` (
     `id` INT UNSIGNED NOT NULL COMMENT 'Condition dynamic racemask ID (referenced by ConditionValue1 when ConditionValue2 = 1)',
-    `racemask` VARBINARY(64) NOT NULL COMMENT 'Binary racemask bytes (Big-Endian in SQL, bit = raceId - 1)',
-    `comment` VARCHAR(255) DEFAULT NULL COMMENT 'Description / human readable notes',
+    `racemask` VARBINARY(32) NOT NULL COMMENT 'Binary racemask bytes (Big-Endian in SQL, bit = raceId - 1)',
     PRIMARY KEY (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 ```
@@ -89,37 +131,48 @@ $$\text{Bit Index} = \text{RaceID} - 1$$
 
 ### SQL Binary Encoding (Big-Endian)
 
-MySQL handles binary bitwise operators (`&`, `|`) in Big-Endian order. `DynamicBitMask` automatically converts SQL Big-Endian byte arrays to Little-Endian 32-bit words in memory:
-
+MySQL handles binary bitwise operators (`&`, `|`) in Big-Endian order:
 - Race 1 only: `0x01`
 - Race 35 only (bit 34): `0x0400000000` (5 bytes)
 - Race 1 + Race 35: `0x0400000001`
 
 ---
 
-## Fallback Mechanisms
+## Tooling & Generation: `lua-dbc`
 
-To ensure zero regressions and 100% backward compatibility, two fallback levels are enforced:
+The module includes an automated Lua conversion script in `data/lua/generate_dynamic_mask.lua`.
 
-### 1. Core / Module Level Fallback
-All hooks in `ScriptMgr` are non-intrusive and return a boolean indicating whether the hook handled the check:
-- `sScriptMgr->OnPlayerCheckItemRace(player, proto, allowed)`
-- `sScriptMgr->OnPlayerCheckQuestRace(player, quest, allowed)`
-- `sScriptMgr->OnConditionCheckRace(cond, unit, result)`
-- `sScriptMgr->OnItemQuerySingleRaceMask(session, proto, queryData)`
+It is powered by [**lua-dbc**](https://github.com/WarcraftXL-Labs/lua-dbc) - LuaJIT FFI bindings for World of Warcraft client databases.
 
-If the module is not loaded or disabled, these hooks return `false`, causing AzerothCore to immediately evaluate the default 32-bit expressions:
-- `(proto->AllowableRace & player->getRaceMask()) != 0`
-- `(quest->GetAllowableRaces() & player->getRaceMask()) != 0`
-- `(cond->ConditionValue1 & unit->getRaceMask()) != 0`
-- `queryData << proto->AllowableRace;`
+### What `generate_dynamic_mask.lua` does:
+1. Scans stock 3.3.5a DBC files (`SkillRaceClassInfo`, `SkillLineAbility`, `TalentTab`, `DanceMoves`, `Faction`).
+2. Extracts and aggregates all distinct 32-bit `RaceMask` and `ClassMask` integers.
+3. Generates `DynamicMask.dbc` with human-readable comments.
+4. Rewrites the stock DBC files to replace legacy masks with `DynamicMask.dbc` IDs.
+5. Preserves backup files (`.dbc.bak`) automatically.
 
-### 2. Overlay Entity Fallback
-When the module is running:
-- If an item `itemId` is not present in `dynamic_racemask_item`, `CheckItemRace` returns `false`, falling back to `proto->AllowableRace`.
-- If a quest `questId` is not present in `dynamic_racemask_quest`, `CheckQuestRace` returns `false`, falling back to `quest->GetAllowableRaces()`.
-- If a condition row has `ConditionValue2 != 1`, `OnConditionCheckRace` returns `false`, falling back to `cond->ConditionValue1`.
-- For item query network serialization (`OnItemQuerySingleRaceMask`), missing items automatically serialize `proto->AllowableRace` packaged in the BitPack format (`wordCount = 1`, `word0 = AllowableRace`).
+### Running the Generator:
+```bash
+cd modules/mod-dynamic-mask/data/lua
+luajit generate_dynamic_mask.lua --source /path/to/stock/dbc --output ../dbc
+```
+
+---
+
+## Vanilla Data Migration (SQL)
+
+A ready-to-run migration script is provided in `data/sql/db_hotfixes/migrate_vanilla_racemasks.sql`.
+
+It performs the following operations:
+1. **Items**: Migrates all items with race restrictions from `acore_world.item_template` into `dynamic_racemask_item` as binary bitmasks (skipping universal items with `AllowableRace = -1` or `0`).
+2. **Quests**: Migrates all race-restricted quests from `acore_world.quest_template` into `dynamic_racemask_quest` (skipping universal quests with `AllowableRaces = 0`).
+3. **Conditions**: Populates `dynamic_racemask_condition` with distinct legacy race masks from `acore_world.conditions` (setting `id` to the legacy mask value), then sets `ConditionValue2 = 1` in `conditions` to activate dynamic evaluation.
+
+To execute manually:
+```bash
+mysql -u acore -p acore_hotfixes < modules/mod-dynamic-mask/data/sql/db_hotfixes/migrate_vanilla_racemasks.sql
+```
+(Or let AzerothCore's DBUpdater execute it automatically upon startup).
 
 ---
 
@@ -152,4 +205,3 @@ This command re-reads `dynamic_racemask_item`, `dynamic_racemask_quest`, and `dy
 ## Network Protocol Specification
 
 For full details regarding network serialization, packet layout, and client-side patch integration, see [NETWORK_PROTOCOL.md](NETWORK_PROTOCOL.md).
-
