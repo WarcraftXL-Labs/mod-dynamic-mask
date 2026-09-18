@@ -20,7 +20,13 @@
 
 #include "Define.h"
 #include "DynamicBitMask.h"
+#include <string>
 #include <unordered_map>
+
+inline uint64 MakeDynamicMaskOverlayKey(uint8 table, uint32 recordId, uint8 maskIndex)
+{
+    return (uint64(table) << 40) | (uint64(maskIndex) << 32) | uint64(recordId);
+}
 
 class DynamicMaskMgr
 {
@@ -28,65 +34,47 @@ public:
     static DynamicMaskMgr* instance();
 
     void LoadFromDB();
+    void LoadWDBC(std::string const& dataPath);
+
+    /**
+     * @brief Checks if a DBC record has a dynamic racemask overlay and evaluates it against race.
+     */
+    bool CheckDBCRace(uint8 table, uint32 recordId, uint8 maskIndex, uint8 race, bool& allowed) const;
+
+    /**
+     * @brief Checks if a DBC record has a dynamic classmask overlay and evaluates it against class_.
+     */
+    bool CheckDBCClass(uint8 table, uint32 recordId, uint8 maskIndex, uint8 class_, bool& allowed) const;
 
     /**
      * @brief Checks if an item has a dynamic racemask overlay and evaluates it against raceId.
-     * @param entry Item template entry (PK)
-     * @param raceId Player race ID (1-based)
-     * @param allowed Output whether the race is permitted
-     * @return true if an entry exists in dynamic_racemask_item (handled), false otherwise (fallback)
      */
     bool CheckItemRace(uint32 entry, uint32 raceId, bool& allowed) const;
 
     /**
      * @brief Checks if a quest has a dynamic racemask overlay and evaluates it against raceId.
-     * @param entry Quest entry (PK)
-     * @param raceId Player race ID (1-based)
-     * @param allowed Output whether the race is permitted
-     * @return true if an entry exists in dynamic_racemask_quest (handled), false otherwise (fallback)
      */
     bool CheckQuestRace(uint32 entry, uint32 raceId, bool& allowed) const;
 
     /**
      * @brief Checks if a condition has a dynamic racemask overlay and evaluates it against raceId.
-     * @param condId Condition overlay ID (PK)
-     * @param raceId Unit race ID (1-based)
-     * @param meets Output whether the condition is met
-     * @return true if an entry exists in dynamic_racemask_condition (handled), false otherwise (fallback)
      */
     bool CheckConditionRace(uint32 condId, uint32 raceId, bool& meets) const;
 
     /**
      * @brief Validates that a condition overlay ID exists in dynamic_racemask_condition.
-     * @param condId Condition overlay ID (PK)
-     * @return true if the ID exists in dynamic_racemask_condition, false otherwise
      */
     [[nodiscard]] bool ValidateConditionRace(uint32 condId) const;
 
-    /**
-     * @brief Gets the dynamic racemask overlay for an item entry if one exists.
-     * @param entry Item template entry (PK)
-     * @return Pointer to DynamicBitMask if found, nullptr otherwise (fallback to legacy)
-     */
     [[nodiscard]] DynamicBitMask const* GetItemMask(uint32 entry) const;
-
-    /**
-     * @brief Gets the dynamic racemask overlay for a quest entry if one exists.
-     * @param entry Quest entry (PK)
-     * @return Pointer to DynamicBitMask if found, nullptr otherwise (fallback to legacy)
-     */
     [[nodiscard]] DynamicBitMask const* GetQuestMask(uint32 entry) const;
-
-    /**
-     * @brief Gets the dynamic racemask overlay for a condition if one exists.
-     * @param condId Condition overlay ID (PK)
-     * @return Pointer to DynamicBitMask if found, nullptr otherwise (fallback to legacy)
-     */
     [[nodiscard]] DynamicBitMask const* GetConditionMask(uint32 condId) const;
+    [[nodiscard]] DynamicBitMask const* GetDynamicOverlayMask(uint8 table, uint32 recordId, uint8 maskIndex = 0) const;
 
     [[nodiscard]] std::size_t GetItemMaskCount() const { return _itemMasks.size(); }
     [[nodiscard]] std::size_t GetQuestMaskCount() const { return _questMasks.size(); }
     [[nodiscard]] std::size_t GetConditionMaskCount() const { return _conditionMasks.size(); }
+    [[nodiscard]] std::size_t GetOverlayMaskCount() const { return _overlayMasks.size(); }
 
 private:
     DynamicMaskMgr() = default;
@@ -95,6 +83,7 @@ private:
     std::unordered_map<uint32, DynamicBitMask> _itemMasks;
     std::unordered_map<uint32, DynamicBitMask> _questMasks;
     std::unordered_map<uint32, DynamicBitMask> _conditionMasks;
+    std::unordered_map<uint64, DynamicBitMask> _overlayMasks;
 };
 
 #define sDynamicMaskMgr DynamicMaskMgr::instance()

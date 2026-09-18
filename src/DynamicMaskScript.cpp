@@ -45,6 +45,12 @@ public:
 
     void OnLoadCustomDatabaseTable() override
     {
+
+        std::string dataPath = sConfigMgr->GetOption<std::string>("DataDir", "./");
+        if (dataPath.empty() || (dataPath.at(dataPath.length() - 1) != '/' && dataPath.at(dataPath.length() - 1) != '\\'))
+            dataPath.push_back('/');
+
+        sDynamicMaskMgr->LoadWDBC(dataPath);
         sDynamicMaskMgr->LoadFromDB();
     }
 };
@@ -76,9 +82,21 @@ public:
             {
                 MISCHOOK_ON_CONDITION_CHECK_RACE,
                 MISCHOOK_ON_CONDITION_VALIDATE_RACE,
-                MISCHOOK_ON_ITEM_QUERY_SINGLE_RACE_MASK
+                MISCHOOK_ON_ITEM_QUERY_SINGLE_RACE_MASK,
+                MISCHOOK_ON_CHECK_RACE_MASK,
+                MISCHOOK_ON_CHECK_CLASS_MASK
             })
     {
+    }
+
+    bool OnCheckRaceMask(uint8 table, uint32 recordId, uint8 maskIndex, uint32 /*fallbackMask*/, uint8 race, bool& result) override
+    {
+        return sDynamicMaskMgr->CheckDBCRace(table, recordId, maskIndex, race, result);
+    }
+
+    bool OnCheckClassMask(uint8 table, uint32 recordId, uint8 maskIndex, uint32 /*fallbackMask*/, uint8 class_, bool& result) override
+    {
+        return sDynamicMaskMgr->CheckDBCClass(table, recordId, maskIndex, class_, result);
     }
 
     bool OnConditionCheckRace(Condition const* cond, Unit const* unit, bool& result) override
@@ -116,11 +134,6 @@ public:
 
     bool OnItemQuerySingleRaceMask(WorldSession* /*session*/, ItemTemplate const* proto, WorldPacket& data) override
     {
-        if (!sConfigMgr->GetOption<bool>("DynamicMask.EnableItemOpcodeHook", true))
-        {
-            return false; // Fallback to legacy 32-bit AllowableRace
-        }
-
         DynamicBitMask const* mask = sDynamicMaskMgr->GetItemMask(proto->ItemId);
         if (mask)
         {
@@ -183,6 +196,13 @@ public:
     static bool HandleReloadDynamicMaskCommand(ChatHandler* handler)
     {
         handler->SendGlobalGMSysMessage("Reloading dynamic bitmask definitions...");
+        std::string dataPath = sConfigMgr->GetOption<std::string>("DataDir", "data/");
+        if (!dataPath.empty() && dataPath.back() != '/' && dataPath.back() != '\\')
+        {
+            dataPath += '/';
+        }
+
+        sDynamicMaskMgr->LoadWDBC(dataPath);
         sDynamicMaskMgr->LoadFromDB();
         handler->SendGlobalGMSysMessage("Dynamic bitmask definitions reloaded.");
         return true;

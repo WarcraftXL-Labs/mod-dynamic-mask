@@ -20,11 +20,44 @@
 #include "Log.h"
 #include "QueryResult.h"
 #include "Timer.h"
+#include "WdbcFile.h"
 
 DynamicMaskMgr* DynamicMaskMgr::instance()
 {
     static DynamicMaskMgr instance;
     return &instance;
+}
+
+void DynamicMaskMgr::LoadWDBC(std::string const& dataPath)
+{
+    uint32 oldMSTime = getMSTime();
+    _overlayMasks.clear();
+
+    std::string wdbcPath = dataPath + "dbc/DynamicMasks.wdbc";
+    WdbcFile file;
+    if (!file.Load(wdbcPath))
+    {
+        LOG_INFO("server.loading", "DynamicMaskMgr: DynamicMasks.wdbc not found at '{}', using vanilla DBC masks.", wdbcPath);
+        return;
+    }
+
+    uint32 const count = file.GetRecordCount();
+    _overlayMasks.reserve(count);
+
+    for (uint32 r = 0; r < count; ++r)
+    {
+        uint8 const table = file.GetUInt8(r, 0);
+        uint32 const recordId = file.GetUInt32(r, 1);
+        uint8 const maskIndex = file.GetUInt8(r, 2);
+        std::pair<uint8 const*, uint16> const blob = file.GetBlob(r, 3);
+        DynamicBitMask mask(blob.first, blob.second);
+
+        uint64 const key = MakeDynamicMaskOverlayKey(table, recordId, maskIndex);
+        _overlayMasks[key] = std::move(mask);
+    }
+
+    LOG_INFO("server.loading", ">> Loaded {} dynamic mask overlays from DynamicMasks.wdbc in {} ms",
+        _overlayMasks.size(), GetMSTimeDiffToNow(oldMSTime));
 }
 
 void DynamicMaskMgr::LoadFromDB()
@@ -79,6 +112,30 @@ void DynamicMaskMgr::LoadFromDB()
 
     LOG_INFO("server.loading", ">> Loaded {} dynamic item racemasks, {} quest racemasks, {} condition racemasks in {} ms",
         _itemMasks.size(), _questMasks.size(), _conditionMasks.size(), GetMSTimeDiffToNow(oldMSTime));
+}
+
+bool DynamicMaskMgr::CheckDBCRace(uint8 table, uint32 recordId, uint8 maskIndex, uint8 race, bool& allowed) const
+{
+    uint64 const key = MakeDynamicMaskOverlayKey(table, recordId, maskIndex);
+    auto it = _overlayMasks.find(key);
+    if (it != _overlayMasks.end())
+    {
+        allowed = it->second.HasRace(race);
+        return true;
+    }
+    return false;
+}
+
+bool DynamicMaskMgr::CheckDBCClass(uint8 table, uint32 recordId, uint8 maskIndex, uint8 class_, bool& allowed) const
+{
+    uint64 const key = MakeDynamicMaskOverlayKey(table, recordId, maskIndex);
+    auto it = _overlayMasks.find(key);
+    if (it != _overlayMasks.end())
+    {
+        allowed = it->second.HasClass(class_);
+        return true;
+    }
+    return false;
 }
 
 bool DynamicMaskMgr::CheckItemRace(uint32 entry, uint32 raceId, bool& allowed) const
@@ -152,3 +209,13 @@ DynamicBitMask const* DynamicMaskMgr::GetConditionMask(uint32 condId) const
     return nullptr;
 }
 
+DynamicBitMask const* DynamicMaskMgr::GetDynamicOverlayMask(uint8 table, uint32 recordId, uint8 maskIndex) const
+{
+    uint64 const key = MakeDynamicMaskOverlayKey(table, recordId, maskIndex);
+    auto it = _overlayMasks.find(key);
+    if (it != _overlayMasks.end())
+    {
+        return &it->second;
+    }
+    return nullptr;
+}
